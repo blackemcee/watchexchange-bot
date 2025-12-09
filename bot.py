@@ -20,18 +20,20 @@ log = logging.getLogger("watchbot")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
 # RSS-лента: можно переопределить через ENV RSS_FEED
-RSS_URL = os.getenv("RSS_FEED")
+RSS_URL = os.getenv(
+    "RSS_FEED",
+    "https://old.reddit.com/r/Watchexchange/new/.rss",
+)
 
-# Включение/выключение keyword-фильтра
 # 0 -> игнорируем KEYWORDS, только tracked users
 # 1 -> tracked users + посты, где в заголовке есть KEYWORDS
-ENABLE_KEYWORD_FILTER = int(os.getenv("ENABLE_KEYWORD_FILTER"))
+ENABLE_KEYWORD_FILTER = int(os.getenv("ENABLE_KEYWORD_FILTER", "0"))
 
-# Список ключевых слов (брендов) из ENV
-raw_keywords = os.getenv("KEYWORDS")
+# KEYWORDS из ENV: "seiko,omega"
+raw_keywords = os.getenv("KEYWORDS", "")
 
 KEYWORDS = set()
 for part in raw_keywords.replace(";", ",").split(","):
@@ -39,9 +41,8 @@ for part in raw_keywords.replace(";", ",").split(","):
     if kw:
         KEYWORDS.add(kw)
 
-# Список отслеживаемых юзеров из ENV
-# Пример: TRACKED_USERS=ParentalAdvice,AudaciousCo,Vast_Requirement8134
-raw_tracked = os.getenv("TRACKED_USERS")
+# TRACKED_USERS из ENV: "ParentalAdvice,AudaciousCo,Vast_Requirement8134"
+raw_tracked = os.getenv("TRACKED_USERS", "")
 
 TRACKED_USERS_NORMALIZED = set()
 for part in raw_tracked.replace(";", ",").split(","):
@@ -93,6 +94,34 @@ seen_posts = load_seen()
 # -----------------------------
 
 
+def fetch_feed(url: str):
+    """
+    Забираем RSS через requests с нормальным User-Agent,
+    чтобы Reddit не отдавал мусор, и логируем статус.
+    """
+    try:
+        if not url:
+            log.error("RSS_URL is empty!")
+            return feedparser.parse("")
+
+        headers = {
+            "User-Agent": "WatchExchangeTelegramBot/0.1 (by u/Vast_Requirement8134)"
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        log.info(f"RSS HTTP status={resp.status_code}, length={len(resp.text)}")
+        resp.raise_for_status()
+
+        feed = feedparser.parse(resp.text)
+        if getattr(feed, "bozo", 0):
+            log.warning(
+                f"Feedparser bozo={feed.bozo}, exception={getattr(feed, 'bozo_exception', None)}"
+            )
+        return feed
+    except Exception as e:
+        log.error(f"Error fetching RSS: {e}")
+        return feedparser.parse("")
+
+
 def extract_first_image_from_html(html: str):
     """Фоллбэк: берём первую <img> из HTML summary RSS."""
     soup = BeautifulSoup(html, "html.parser")
@@ -121,11 +150,10 @@ def extract_post_id(link: str) -> str:
 
 def normalize_author(raw_author: str) -> str:
     """
-    Примеры:
     '/u/Vast_Requirement8134' -> 'vast_requirement8134'
     'u/Vast_Requirement8134'  -> 'vast_requirement8134'
     'Vast_Requirement8134'    -> 'vast_requirement8134'
-    'Username (u/Username)'   -> пытаемся вытащить часть после 'u/'
+    'Username (u/Username)'   -> вытаскиваем u/Username
     """
     if not raw_author:
         return ""
@@ -190,8 +218,7 @@ def get_images_from_reddit(link: str):
                     url = url.replace("&amp;", "&")
                     images.append(url)
 
-            # Ограничиваем первыми 10 (лимит Telegram на media_group)
-            images = images[:10]
+            images = images[:10]  # лимит Telegram на media_group
             return images
 
         # 2) Обычное изображение
@@ -222,7 +249,7 @@ log.info("Bot started (RSS mode)!")
 # -----------------------------
 while True:
     try:
-        feed = feedparser.parse(RSS_URL)
+        feed = fetch_feed(RSS_URL)
         log.info(f"Fetched feed with {len(feed.entries)} entries")
 
         for entry in feed.entries:
@@ -297,7 +324,6 @@ while True:
                     )
                 else:
                     media = [InputMediaPhoto(media=url) for url in image_urls]
-                    # caption можно только на первой
                     media[0].caption = message
                     media[0].parse_mode = "HTML"
                     bot.send_media_group(
@@ -306,10 +332,10 @@ while True:
                     )
             else:
                 bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=message,
-                    parse_mode="HTML",
-                )
+                chat_id=CHAT_ID,
+                text=message,
+                parse_mode="HTML",
+            )
 
             log.info(
                 f"Sent post {post_id} from {author_norm} "
