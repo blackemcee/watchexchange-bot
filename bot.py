@@ -23,7 +23,8 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
 TARGET_USERS = {"ParentalAdvice", "AudaciousCo", "AutoModerator"}
 
-RSS_URL = "https://www.reddit.com/r/Watchexchange/new/.rss"
+RSS_URL = os.getenv("RSS_FEED")
+#RSS_URL = "https://www.reddit.com/r/Watchexchange/new/.rss"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
