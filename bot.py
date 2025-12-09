@@ -22,7 +22,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL"))
 
 # Кого слушаем
-TARGET_USERS = {"ParentalAdvice", "AudaciousCo"}
+TARGET_USERS = {"ParentalAdvice", "AudaciousCo", "Vast_Requirement8134"}
 
 # RSS-лента: можно переопределить через RSS_FEED
 RSS_URL = os.getenv("RSS_FEED")
