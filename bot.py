@@ -21,7 +21,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
-TARGET_USERS = {"ParentalAdvice", "AudaciousCo"}
+TARGET_USERS = {"ParentalAdvice", "AudaciousCo", "AutoModerator"}
 
 RSS_URL = "https://www.reddit.com/r/Watchexchange/new/.rss"
 
