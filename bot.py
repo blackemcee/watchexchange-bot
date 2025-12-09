@@ -3,9 +3,8 @@ import json
 import os
 import re
 import feedparser
-import requests
 from bs4 import BeautifulSoup
-from telegram import Bot, InputMediaPhoto
+from telegram import Bot
 import logging
 
 # -----------------------------
@@ -94,7 +93,7 @@ seen_posts = load_seen()
 
 
 def extract_first_image_from_html(html: str):
-    """Фоллбэк: берём первую <img> из HTML summary RSS."""
+    """Берём первую <img> из HTML summary."""
     soup = BeautifulSoup(html, "html.parser")
     img = soup.find("img")
     if img and img.get("src"):
@@ -153,68 +152,6 @@ def escape_html(text: str) -> str:
     )
 
 
-def get_images_from_reddit(link: str):
-    """
-    Возвращает список URL картинок:
-    - для галереи: все (до 10, из media_metadata)
-    - для одиночного поста: одну (из url/preview)
-    Если не получилось — возвращает [].
-    """
-    images = []
-
-    try:
-        if not link or "reddit.com" not in link:
-            return []
-
-        json_url = link.rstrip("/") + ".json"
-        headers = {
-            "User-Agent": "WatchExchangeTelegramBot/0.1 (by u/Vast_Requirement8134)"
-        }
-        resp = requests.get(json_url, headers=headers, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-
-        post = data[0]["data"]["children"][0]["data"]
-
-        # 1) Галерея
-        if post.get("is_gallery"):
-            media = post.get("media_metadata") or {}
-            for item in media.values():
-                url = None
-                # Стараемся взять самое большое
-                if "s" in item and "u" in item["s"]:
-                    url = item["s"]["u"]
-                elif "p" in item and item["p"]:
-                    url = item["p"][-1].get("u")
-                if url:
-                    url = url.replace("&amp;", "&")
-                    images.append(url)
-
-            # Ограничиваем первыми 10 (лимит Telegram на media_group)
-            images = images[:10]
-            return images
-
-        # 2) Обычное изображение
-        for key in ("url_overridden_by_dest", "url"):
-            u = post.get(key)
-            if u and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
-                images.append(u.replace("&amp;", "&"))
-                return images
-
-        # 3) preview.source
-        preview = post.get("preview")
-        if preview and "images" in preview and preview["images"]:
-            source = preview["images"][0].get("source")
-            if source and "url" in source:
-                images.append(source["url"].replace("&amp;", "&"))
-                return images
-
-    except Exception as e:
-        log.error(f"Error fetching full images json for {link}: {e}")
-
-    return images
-
-
 log.info("Bot started (RSS mode)!")
 
 # -----------------------------
@@ -257,15 +194,7 @@ while True:
                 continue
 
             summary = entry.summary
-
-            # Сначала пробуем достать хорошие картинки через JSON (галерея / одиночный пост)
-            image_urls = get_images_from_reddit(link)
-
-            # Если не получилось, fallback к первой картинке из RSS
-            if not image_urls:
-                fallback = extract_first_image_from_html(summary)
-                if fallback:
-                    image_urls = [fallback]
+            image_url = extract_first_image_from_html(summary)
 
             if author_ok and keyword_ok:
                 source_label = "tracked user + keyword match"
@@ -275,6 +204,7 @@ while True:
                 matched = [kw for kw in KEYWORDS if kw in title_lower]
                 source_label = f"keyword match: {','.join(matched) or 'unknown'}"
 
+            # Готовим текст в HTML без <br>, только \n
             author_html = escape_html(author_norm or "unknown")
             title_html = escape_html(title)
             source_html = escape_html(source_label)
@@ -286,24 +216,13 @@ while True:
                 f'<a href="{link}">Open post</a>'
             )
 
-            # Отправка: одна картинка или альбом
-            if image_urls:
-                if len(image_urls) == 1:
-                    bot.send_photo(
-                        chat_id=CHAT_ID,
-                        photo=image_urls[0],
-                        caption=message,
-                        parse_mode="HTML",
-                    )
-                else:
-                    media = [InputMediaPhoto(media=url) for url in image_urls]
-                    # caption можно только на первой
-                    media[0].caption = message
-                    media[0].parse_mode = "HTML"
-                    bot.send_media_group(
-                        chat_id=CHAT_ID,
-                        media=media,
-                    )
+            if image_url:
+                bot.send_photo(
+                    chat_id=CHAT_ID,
+                    photo=image_url,
+                    caption=message,
+                    parse_mode="HTML",
+                )
             else:
                 bot.send_message(
                     chat_id=CHAT_ID,
@@ -313,7 +232,7 @@ while True:
 
             log.info(
                 f"Sent post {post_id} from {author_norm} "
-                f"(author_ok={author_ok}, keyword_ok={keyword_ok}, images={len(image_urls)})"
+                f"(author_ok={author_ok}, keyword_ok={keyword_ok})"
             )
 
             seen_posts.add(post_id)
