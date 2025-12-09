@@ -5,7 +5,7 @@ import re
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-from telegram import Bot, InputMediaPhoto
+from telegram import Bot
 import logging
 
 # -----------------------------
@@ -22,14 +22,17 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
-# RSS-лента
+# RSS-лента: можно переопределить через ENV RSS_FEED
 RSS_URL = os.getenv(
     "RSS_FEED",
     "https://old.reddit.com/r/Watchexchange/new/.rss",
 )
 
-# Фильтр по ключевым словам
+# 0 -> игнорируем KEYWORDS, только tracked users
+# 1 -> tracked users + посты, где в заголовке есть KEYWORDS
 ENABLE_KEYWORD_FILTER = int(os.getenv("ENABLE_KEYWORD_FILTER", "0"))
+
+# KEYWORDS из ENV: "seiko,omega"
 raw_keywords = os.getenv("KEYWORDS", "")
 
 KEYWORDS = set()
@@ -38,8 +41,9 @@ for part in raw_keywords.replace(";", ",").split(","):
     if kw:
         KEYWORDS.add(kw)
 
-# Отслеживаемые юзеры
+# TRACKED_USERS из ENV: "ParentalAdvice,AudaciousCo,Vast_Requirement8134"
 raw_tracked = os.getenv("TRACKED_USERS", "")
+
 TRACKED_USERS_NORMALIZED = set()
 for part in raw_tracked.replace(";", ",").split(","):
     u = part.strip().strip(" '\"").lower()
@@ -91,7 +95,10 @@ seen_posts = load_seen()
 
 
 def fetch_feed(url: str):
-    """RSS через requests + нормальный UA."""
+    """
+    Забираем RSS через requests с нормальным User-Agent,
+    чтобы Reddit не отдавал мусор, и логируем статус.
+    """
     try:
         if not url:
             log.error("RSS_URL is empty!")
@@ -116,7 +123,7 @@ def fetch_feed(url: str):
 
 
 def extract_first_image_from_html(html: str):
-    """Фоллбэк: берём первую <img> из HTML summary RSS (мелкое превью)."""
+    """Берём первую <img> из HTML summary RSS (маленький превьюшный thumbnail)."""
     soup = BeautifulSoup(html, "html.parser")
     img = soup.find("img")
     if img and img.get("src"):
@@ -128,7 +135,11 @@ def extract_first_image_from_html(html: str):
 
 
 def extract_post_id(link: str) -> str:
-    """ID поста из URL /comments/<id>/."""
+    """
+    Стабильный ID поста из URL вида:
+    https://www.reddit.com/r/test/comments/abc123/title/
+    Если не нашли — возвращаем сам линк.
+    """
     if not link:
         return ""
     match = re.search(r"/comments/([a-z0-9]+)/", link)
@@ -138,7 +149,12 @@ def extract_post_id(link: str) -> str:
 
 
 def normalize_author(raw_author: str) -> str:
-    """Приводим автора к 'vast_requirement8134' формату."""
+    """
+    '/u/Vast_Requirement8134' -> 'vast_requirement8134'
+    'u/Vast_Requirement8134'  -> 'vast_requirement8134'
+    'Vast_Requirement8134'    -> 'vast_requirement8134'
+    'Username (u/Username)'   -> вытаскиваем u/Username
+    """
     if not raw_author:
         return ""
 
@@ -165,116 +181,6 @@ def escape_html(text: str) -> str:
     )
 
 
-def build_json_url_from_link(link: str) -> str | None:
-    """
-    Из любой reddit-ссылки (old/new/mobile) делаем:
-    https://www.reddit.com/r/.../comments/.../.json
-    """
-    if not link:
-        return None
-
-    # Отбрасываем параметры
-    link = link.split("?", 1)[0]
-
-    m = re.search(r"(/r/[^/]+/comments/[a-z0-9]+/[^/]+)", link)
-    if not m:
-        log.warning(f"Cannot extract reddit path from link: {link}")
-        return None
-
-    path = m.group(1)
-    json_url = f"https://www.reddit.com{path}.json"
-    return json_url
-
-
-def get_images_from_reddit(link: str):
-    """
-    Возвращает список URL картинок:
-    - для галереи: все (до 10, через gallery_data + media_metadata)
-    - для одиночного поста: одну (из url/preview)
-    Если не получилось — [].
-    """
-    images = []
-
-    try:
-        json_url = build_json_url_from_link(link)
-        if not json_url:
-            return []
-
-        headers = {
-            "User-Agent": "WatchExchangeTelegramBot/0.1 (by u/Vast_Requirement8134)"
-        }
-        resp = requests.get(json_url, headers=headers, timeout=5)
-        log.info(f"JSON HTTP status={resp.status_code} for {json_url}")
-        resp.raise_for_status()
-        data = resp.json()
-
-        post = data[0]["data"]["children"][0]["data"]
-
-        gallery_data = post.get("gallery_data")
-        media = post.get("media_metadata") or {}
-
-        # 1) Галерея через gallery_data
-        if gallery_data and "items" in gallery_data and media:
-            for item in gallery_data["items"]:
-                media_id = item.get("media_id")
-                if not media_id:
-                    continue
-                md = media.get(media_id) or {}
-                url = None
-                if "s" in md and "u" in md["s"]:
-                    url = md["s"]["u"]
-                elif "p" in md and md["p"]:
-                    url = md["p"][-1].get("u")
-                if url:
-                    url = url.replace("&amp;", "&")
-                    images.append(url)
-
-            if images:
-                images = images[:10]
-                log.info(f"JSON gallery via gallery_data: {len(images)} images for {link}")
-                return images
-
-        # 2) Если is_gallery True, но gallery_data нет — старый путь по media_metadata
-        if post.get("is_gallery") and media and not images:
-            for md in media.values():
-                url = None
-                if "s" in md and "u" in md["s"]:
-                    url = md["s"]["u"]
-                elif "p" in md and md["p"]:
-                    url = md["p"][-1].get("u")
-                if url:
-                    url = url.replace("&amp;", "&")
-                    images.append(url)
-            if images:
-                images = images[:10]
-                log.info(f"JSON gallery via media_metadata only: {len(images)} images for {link}")
-                return images
-
-        # 3) Обычное изображение
-        for key in ("url_overridden_by_dest", "url"):
-            u = post.get(key)
-            if u and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
-                images.append(u.replace("&amp;", "&"))
-                log.info(f"JSON single image from {key} for {link}")
-                return images
-
-        # 4) preview.source
-        preview = post.get("preview")
-        if preview and "images" in preview and preview["images"]:
-            source = preview["images"][0].get("source")
-            if source and "url" in source:
-                images.append(source["url"].replace("&amp;", "&"))
-                log.info(f"JSON preview image for {link}")
-                return images
-
-        log.info(f"JSON: no images found in post data for {link}")
-
-    except Exception as e:
-        log.error(f"Error fetching full images json for {link}: {e}")
-
-    return images
-
-
 log.info("Bot started (RSS mode)!")
 
 # -----------------------------
@@ -295,7 +201,7 @@ while True:
             title = getattr(entry, "title", "") or ""
             title_lower = title.lower()
 
-            # Фильтр по ключевым словам
+            # Фильтр по ключевым словам в заголовке
             title_matches_keyword = any(kw in title_lower for kw in KEYWORDS)
 
             author_ok = author_norm in TRACKED_USERS_NORMALIZED
@@ -308,22 +214,16 @@ while True:
                 f"title_matches_keyword={title_matches_keyword}"
             )
 
+            # защитa от дублей
             if post_id in seen_posts:
                 continue
 
+            # Если ни tracked user, ни keyword — пропускаем
             if not (author_ok or keyword_ok):
                 continue
 
             summary = entry.summary
-
-            # Пытаемся взять нормальные картинки через JSON
-            image_urls = get_images_from_reddit(link)
-
-            # Если не получилось — fallback к превью из RSS
-            if not image_urls:
-                fallback = extract_first_image_from_html(summary)
-                if fallback:
-                    image_urls = [fallback]
+            image_url = extract_first_image_from_html(summary)
 
             if author_ok and keyword_ok:
                 source_label = "tracked user + keyword match"
@@ -344,23 +244,13 @@ while True:
                 f'<a href="{link}">Open post</a>'
             )
 
-            # Отправка: одна картинка или альбом
-            if image_urls:
-                if len(image_urls) == 1:
-                    bot.send_photo(
-                        chat_id=CHAT_ID,
-                        photo=image_urls[0],
-                        caption=message,
-                        parse_mode="HTML",
-                    )
-                else:
-                    media = [InputMediaPhoto(media=url) for url in image_urls]
-                    media[0].caption = message
-                    media[0].parse_mode = "HTML"
-                    bot.send_media_group(
-                        chat_id=CHAT_ID,
-                        media=media,
-                    )
+            if image_url:
+                bot.send_photo(
+                    chat_id=CHAT_ID,
+                    photo=image_url,
+                    caption=message,
+                    parse_mode="HTML",
+                )
             else:
                 bot.send_message(
                     chat_id=CHAT_ID,
@@ -370,7 +260,7 @@ while True:
 
             log.info(
                 f"Sent post {post_id} from {author_norm} "
-                f"(author_ok={author_ok}, keyword_ok={keyword_ok}, images={len(image_urls)})"
+                f"(author_ok={author_ok}, keyword_ok={keyword_ok}, image={'yes' if image_url else 'no'})"
             )
 
             seen_posts.add(post_id)
