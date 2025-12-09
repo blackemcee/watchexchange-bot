@@ -71,7 +71,7 @@ while True:
         feed = feedparser.parse(RSS_URL)
 
         for entry in feed.entries:
-            post_id = entry.id
+            post_id = entry.link.strip()
 
             raw_author = entry.get("author", "") or ""
             log.info(f"AUTHOR FOUND RAW: '{raw_author}'")
