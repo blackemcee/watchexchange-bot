@@ -19,25 +19,31 @@ log = logging.getLogger("watchbot")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL"))
 
-# Авторов слушаем всегда
-TARGET_USERS = {"ParentalAdvice", "AudaciousCo"}
-TARGET_USERS_NORMALIZED = {u.lower() for u in TARGET_USERS}
-
-# Основной фид
-RSS_URL = os.getenv(
-    "RSS_FEED",
-    "https://www.reddit.com/r/Watchexchange/new/.rss",
-)
+# RSS-лента: можно переопределить через ENV RSS_FEED
+RSS_URL = os.getenv("RSS_FEED")
 
 # Включение/выключение keyword-фильтра
+# 0 -> игнорируем KEYWORDS, только tracked users
+# 1 -> tracked users + посты, где в заголовке есть KEYWORDS
 ENABLE_KEYWORD_FILTER = int(os.getenv("ENABLE_KEYWORD_FILTER"))
 
-# Список ключевых слов
+# Список ключевых слов (брендов) из ENV
 raw_keywords = os.getenv("KEYWORDS")
 KEYWORDS = {kw.strip().lower() for kw in raw_keywords.split(",") if kw.strip()}
 
+# Список отслеживаемых юзеров из ENV
+# Пример: TRACKED_USERS=ParentalAdvice,AudaciousCo,Vast_Requirement8134
+raw_tracked = os.getenv("TRACKED_USERS")
+TRACKED_USERS_NORMALIZED = {
+    u.strip().lower()
+    for u in raw_tracked.split(",")
+    if u.strip()
+}
+
+log.info(f"RSS_URL = {RSS_URL}")
+log.info(f"Tracked users: {TRACKED_USERS_NORMALIZED}")
 log.info(f"Keyword filter: {ENABLE_KEYWORD_FILTER}, keywords={KEYWORDS}")
 
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -96,6 +102,7 @@ def extract_post_id(link: str) -> str:
     """
     Стабильный ID поста из URL вида:
     https://www.reddit.com/r/test/comments/abc123/title/
+    Если не нашли — возвращаем сам линк.
     """
     if not link:
         return ""
@@ -116,7 +123,7 @@ def normalize_author(raw_author: str) -> str:
     return a
 
 
-log.info(f"Bot started (RSS mode)! RSS_URL={RSS_URL}")
+log.info("Bot started (RSS mode)!")
 
 # -----------------------------
 # MAIN LOOP
@@ -141,33 +148,34 @@ while True:
             title = getattr(entry, "title", "") or ""
             title_lower = title.lower()
 
-            # -------------------------------
-            # ФИЛЬТР ПО КЛЮЧЕВЫМ СЛОВАМ
-            # -------------------------------
+            # Фильтр по ключевым словам в заголовке
             title_matches_keyword = any(kw in title_lower for kw in KEYWORDS)
 
             # Логика включения
-            author_ok = author_norm in TARGET_USERS_NORMALIZED
+            author_ok = author_norm in TRACKED_USERS_NORMALIZED
             keyword_ok = ENABLE_KEYWORD_FILTER == 1 and title_matches_keyword
 
-            # Если ни один фильтр не срабатывает — пропускаем
+            # Если ни tracked user, ни keyword — пропускаем
             if not (author_ok or keyword_ok):
                 continue
 
             summary = entry.summary
             image_url = extract_first_image_from_html(summary)
 
-            source_label = (
-                "tracked user"
-                if author_ok
-                else f"keyword match: {','.join([kw for kw in KEYWORDS if kw in title_lower])}"
-            )
+            if author_ok and keyword_ok:
+                source_label = "tracked user + keyword match"
+            elif author_ok:
+                source_label = "tracked user"
+            else:
+                # только keyword
+                matched = [kw for kw in KEYWORDS if kw in title_lower]
+                source_label = f"keyword match: {','.join(matched) or 'unknown'}"
 
             message = (
                 f"🕵️ New post ({source_label})\n\n"
                 f"*Author:* {author_norm or 'unknown'}\n\n"
                 f"*{title}*\n\n"
-                f"[Open Reddit]({link})"
+                f"[Open post]({link})"
             )
 
             if image_url:
