@@ -79,6 +79,8 @@ while True:
 
             # автор
             author = entry.get("author", "")
+            log.info(f"AUTHOR FOUND: '{author}'")
+            
             if author not in TARGET_USERS:
                 continue
 
