@@ -184,9 +184,9 @@ def escape_html(text: str) -> str:
 def get_images_from_reddit(link: str):
     """
     Возвращает список URL картинок:
-    - для галереи: все (до 10, из media_metadata)
+    - для галереи: все (до 10, через gallery_data + media_metadata)
     - для одиночного поста: одну (из url/preview)
-    Если не получилось — возвращает [].
+    Если не получилось — [].
     """
     images = []
 
@@ -204,36 +204,61 @@ def get_images_from_reddit(link: str):
 
         post = data[0]["data"]["children"][0]["data"]
 
-        # 1) Галерея
-        if post.get("is_gallery"):
-            media = post.get("media_metadata") or {}
-            for item in media.values():
+        # 1) Галерея через gallery_data + media_metadata
+        gallery_data = post.get("gallery_data")
+        media = post.get("media_metadata") or {}
+
+        if gallery_data and "items" in gallery_data:
+            for item in gallery_data["items"]:
+                media_id = item.get("media_id")
+                if not media_id:
+                    continue
+                md = media.get(media_id) or {}
                 url = None
-                # Стараемся взять самое большое
-                if "s" in item and "u" in item["s"]:
-                    url = item["s"]["u"]
-                elif "p" in item and item["p"]:
-                    url = item["p"][-1].get("u")
+                if "s" in md and "u" in md["s"]:
+                    url = md["s"]["u"]
+                elif "p" in md and md["p"]:
+                    url = md["p"][-1].get("u")
                 if url:
                     url = url.replace("&amp;", "&")
                     images.append(url)
 
-            images = images[:10]  # лимит Telegram на media_group
-            return images
+            if images:
+                images = images[:10]
+                log.info(f"JSON gallery: {len(images)} images from {link}")
+                return images
 
-        # 2) Обычное изображение
+        # 2) Если is_gallery True, но gallery_data нет — старый путь по media_metadata
+        if post.get("is_gallery") and media:
+            for md in media.values():
+                url = None
+                if "s" in md and "u" in md["s"]:
+                    url = md["s"]["u"]
+                elif "p" in md and md["p"]:
+                    url = md["p"][-1].get("u")
+                if url:
+                    url = url.replace("&amp;", "&")
+                    images.append(url)
+            if images:
+                images = images[:10]
+                log.info(f"JSON gallery (no gallery_data): {len(images)} images from {link}")
+                return images
+
+        # 3) Обычное изображение
         for key in ("url_overridden_by_dest", "url"):
             u = post.get(key)
             if u and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
                 images.append(u.replace("&amp;", "&"))
+                log.info(f"JSON single image from {key} for {link}")
                 return images
 
-        # 3) preview.source
+        # 4) preview.source
         preview = post.get("preview")
         if preview and "images" in preview and preview["images"]:
             source = preview["images"][0].get("source")
             if source and "url" in source:
                 images.append(source["url"].replace("&amp;", "&"))
+                log.info(f"JSON preview image for {link}")
                 return images
 
     except Exception as e:
@@ -332,10 +357,10 @@ while True:
                     )
             else:
                 bot.send_message(
-                chat_id=CHAT_ID,
-                text=message,
-                parse_mode="HTML",
-            )
+                    chat_id=CHAT_ID,
+                    text=message,
+                    parse_mode="HTML",
+                )
 
             log.info(
                 f"Sent post {post_id} from {author_norm} "
