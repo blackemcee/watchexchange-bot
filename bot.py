@@ -204,15 +204,15 @@ while True:
                 matched = [kw for kw in KEYWORDS if kw in title_lower]
                 source_label = f"keyword match: {','.join(matched) or 'unknown'}"
 
-            # Готовим текст в HTML
+            # Готовим текст в HTML без <br>, только \n
             author_html = escape_html(author_norm or "unknown")
             title_html = escape_html(title)
             source_html = escape_html(source_label)
 
             message = (
-                f"🕵️ New post ({source_html})<br><br>"
-                f"<b>Author:</b> {author_html}<br><br>"
-                f"<b>{title_html}</b><br>"
+                f"🕵️ New post ({source_html})\n\n"
+                f"<b>Author:</b> {author_html}\n\n"
+                f"<b>{title_html}</b>\n"
                 f'<a href="{link}">Open post</a>'
             )
 
