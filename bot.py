@@ -19,13 +19,26 @@ log = logging.getLogger("watchbot")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
-# Кого слушаем
-TARGET_USERS = {"ParentalAdvice", "AudaciousCo", "Vast_Requirement8134"}
+# Авторов слушаем всегда
+TARGET_USERS = {"ParentalAdvice", "AudaciousCo"}
+TARGET_USERS_NORMALIZED = {u.lower() for u in TARGET_USERS}
 
-# RSS-лента: можно переопределить через RSS_FEED
-RSS_URL = os.getenv("RSS_FEED")
+# Основной фид
+RSS_URL = os.getenv(
+    "RSS_FEED",
+    "https://www.reddit.com/r/Watchexchange/new/.rss",
+)
+
+# Включение/выключение keyword-фильтра
+ENABLE_KEYWORD_FILTER = int(os.getenv("ENABLE_KEYWORD_FILTER"))
+
+# Список ключевых слов
+raw_keywords = os.getenv("KEYWORDS")
+KEYWORDS = {kw.strip().lower() for kw in raw_keywords.split(",") if kw.strip()}
+
+log.info(f"Keyword filter: {ENABLE_KEYWORD_FILTER}, keywords={KEYWORDS}")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
@@ -83,7 +96,6 @@ def extract_post_id(link: str) -> str:
     """
     Стабильный ID поста из URL вида:
     https://www.reddit.com/r/test/comments/abc123/title/
-    Если не нашли — возвращаем сам линк.
     """
     if not link:
         return ""
@@ -104,13 +116,11 @@ def normalize_author(raw_author: str) -> str:
     return a
 
 
-TARGET_USERS_NORMALIZED = {u.lower() for u in TARGET_USERS}
+log.info(f"Bot started (RSS mode)! RSS_URL={RSS_URL}")
 
 # -----------------------------
 # MAIN LOOP
 # -----------------------------
-log.info(f"Bot started (RSS mode)! RSS_URL={RSS_URL}")
-
 while True:
     try:
         feed = feedparser.parse(RSS_URL)
@@ -125,25 +135,41 @@ while True:
                 continue
 
             raw_author = entry.get("author", "") or ""
-            log.info(f"AUTHOR RAW: '{raw_author}'")
-
             author_norm = normalize_author(raw_author)
-            log.info(f"AUTHOR NORMALIZED: '{author_norm}'")
 
-            if author_norm not in TARGET_USERS_NORMALIZED:
+            # Заголовок
+            title = getattr(entry, "title", "") or ""
+            title_lower = title.lower()
+
+            # -------------------------------
+            # ФИЛЬТР ПО КЛЮЧЕВЫМ СЛОВАМ
+            # -------------------------------
+            title_matches_keyword = any(kw in title_lower for kw in KEYWORDS)
+
+            # Логика включения
+            author_ok = author_norm in TARGET_USERS_NORMALIZED
+            keyword_ok = ENABLE_KEYWORD_FILTER == 1 and title_matches_keyword
+
+            # Если ни один фильтр не срабатывает — пропускаем
+            if not (author_ok or keyword_ok):
                 continue
 
-            title = entry.title
-            summary = entry.summary  # HTML с изображениями
+            summary = entry.summary
             image_url = extract_first_image_from_html(summary)
 
-            message = (
-                f"🕵️ Новый пост от *{author_norm}*\n\n"
-                f"*{title}*\n\n"
-                f"[Открыть пост]({link})"
+            source_label = (
+                "tracked user"
+                if author_ok
+                else f"keyword match: {','.join([kw for kw in KEYWORDS if kw in title_lower])}"
             )
 
-            # отправка
+            message = (
+                f"🕵️ New post ({source_label})\n\n"
+                f"*Author:* {author_norm or 'unknown'}\n\n"
+                f"*{title}*\n\n"
+                f"[Open Reddit]({link})"
+            )
+
             if image_url:
                 bot.send_photo(
                     chat_id=CHAT_ID,
@@ -158,9 +184,11 @@ while True:
                     parse_mode="Markdown",
                 )
 
-            log.info(f"Sent post {post_id} from {author_norm}")
+            log.info(
+                f"Sent post {post_id} from {author_norm} "
+                f"(author_ok={author_ok}, keyword_ok={keyword_ok})"
+            )
 
-            # пометили как отправленный
             seen_posts.add(post_id)
             save_seen(seen_posts)
 
