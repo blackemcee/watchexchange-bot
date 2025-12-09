@@ -73,15 +73,22 @@ while True:
         for entry in feed.entries:
             post_id = entry.id
 
-            # уже отправляли
-            if post_id in seen_posts:
-                continue
+            raw_author = entry.get("author", "") or ""
+            log.info(f"AUTHOR FOUND RAW: '{raw_author}'")
 
-            # автор
-            author = entry.get("author", "")
-            log.info(f"AUTHOR FOUND: '{author}'")
-            
-            if author not in TARGET_USERS:
+            # нормализуем: убираем /u/, u/, пробелы и делаем lower
+            author = (
+                raw_author
+                .lower()
+                .replace("/u/", "")
+                .replace("u/", "")
+                .strip()
+            )
+            log.info(f"AUTHOR NORMALIZED: '{author}'")
+
+            target_users_normalized = {u.lower() for u in TARGET_USERS}
+
+            if author not in target_users_normalized:
                 continue
 
             # текст
