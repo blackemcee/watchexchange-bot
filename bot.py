@@ -31,19 +31,25 @@ ENABLE_KEYWORD_FILTER = int(os.getenv("ENABLE_KEYWORD_FILTER"))
 
 # Список ключевых слов (брендов) из ENV
 raw_keywords = os.getenv("KEYWORDS")
-KEYWORDS = {kw.strip().lower() for kw in raw_keywords.split(",") if kw.strip()}
+
+KEYWORDS = set()
+for part in raw_keywords.replace(";", ",").split(","):
+    kw = part.strip().strip(" '\"").lower()
+    if kw:
+        KEYWORDS.add(kw)
 
 # Список отслеживаемых юзеров из ENV
 # Пример: TRACKED_USERS=ParentalAdvice,AudaciousCo,Vast_Requirement8134
 raw_tracked = os.getenv("TRACKED_USERS")
-TRACKED_USERS_NORMALIZED = {
-    u.strip().lower()
-    for u in raw_tracked.split(",")
-    if u.strip()
-}
+
+TRACKED_USERS_NORMALIZED = set()
+for part in raw_tracked.replace(";", ",").split(","):
+    u = part.strip().strip(" '\"").lower()
+    if u:
+        TRACKED_USERS_NORMALIZED.add(u)
 
 log.info(f"RSS_URL = {RSS_URL}")
-log.info(f"Tracked users: {TRACKED_USERS_NORMALIZED}")
+log.info(f"Tracked users (normalized): {TRACKED_USERS_NORMALIZED}")
 log.info(f"Keyword filter: {ENABLE_KEYWORD_FILTER}, keywords={KEYWORDS}")
 
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -114,13 +120,36 @@ def extract_post_id(link: str) -> str:
 
 def normalize_author(raw_author: str) -> str:
     """
-    /u/Vast_Requirement8134 -> vast_requirement8134
+    Примеры:
+    '/u/Vast_Requirement8134' -> 'vast_requirement8134'
+    'u/Vast_Requirement8134'  -> 'vast_requirement8134'
+    'Vast_Requirement8134'    -> 'vast_requirement8134'
+    'Username (u/Username)'   -> пытаемся вытащить часть после 'u/'
     """
     if not raw_author:
         return ""
-    a = raw_author.lower().strip()
-    a = a.replace("/u/", "").replace("u/", "")
+
+    a = raw_author.strip()
+
+    m = re.search(r"u/([A-Za-z0-9_-]+)", a)
+    if m:
+        return m.group(1).lower()
+
+    a = a.lower()
+    a = a.replace("/u/", "").replace("u/", "").strip()
+
     return a
+
+
+def escape_html(text: str) -> str:
+    """Экранируем базовые символы для HTML parse_mode."""
+    if not text:
+        return ""
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    )
 
 
 log.info("Bot started (RSS mode)!")
@@ -137,23 +166,28 @@ while True:
             link = getattr(entry, "link", "") or ""
             post_id = extract_post_id(link)
 
-            # защитa от дублей
-            if post_id in seen_posts:
-                continue
-
             raw_author = entry.get("author", "") or ""
             author_norm = normalize_author(raw_author)
 
-            # Заголовок
             title = getattr(entry, "title", "") or ""
             title_lower = title.lower()
 
             # Фильтр по ключевым словам в заголовке
             title_matches_keyword = any(kw in title_lower for kw in KEYWORDS)
 
-            # Логика включения
             author_ok = author_norm in TRACKED_USERS_NORMALIZED
             keyword_ok = ENABLE_KEYWORD_FILTER == 1 and title_matches_keyword
+
+            log.info(
+                f"ENTRY post_id={post_id}, raw_author='{raw_author}', "
+                f"author_norm='{author_norm}', title='{title}', "
+                f"author_ok={author_ok}, keyword_ok={keyword_ok}, "
+                f"title_matches_keyword={title_matches_keyword}"
+            )
+
+            # защитa от дублей
+            if post_id in seen_posts:
+                continue
 
             # Если ни tracked user, ни keyword — пропускаем
             if not (author_ok or keyword_ok):
@@ -167,15 +201,19 @@ while True:
             elif author_ok:
                 source_label = "tracked user"
             else:
-                # только keyword
                 matched = [kw for kw in KEYWORDS if kw in title_lower]
                 source_label = f"keyword match: {','.join(matched) or 'unknown'}"
 
+            # Готовим текст в HTML
+            author_html = escape_html(author_norm or "unknown")
+            title_html = escape_html(title)
+            source_html = escape_html(source_label)
+
             message = (
-                f"🕵️ New post ({source_label})\n\n"
-                f"*Author:* {author_norm or 'unknown'}\n\n"
-                f"*{title}*\n\n"
-                f"[Open post]({link})"
+                f"🕵️ New post ({source_html})<br><br>"
+                f"<b>Author:</b> {author_html}<br><br>"
+                f"<b>{title_html}</b><br>"
+                f'<a href="{link}">Open post</a>'
             )
 
             if image_url:
@@ -183,13 +221,13 @@ while True:
                     chat_id=CHAT_ID,
                     photo=image_url,
                     caption=message,
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
             else:
                 bot.send_message(
                     chat_id=CHAT_ID,
                     text=message,
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
 
             log.info(
